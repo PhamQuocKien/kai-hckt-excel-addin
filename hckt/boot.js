@@ -60,7 +60,8 @@ const qaApplicationCodes=new Set([
 function qaTrustedError(message){const error=Error(message);qaTrustedDiagnostics.set(error,message);return error}
 function qaDiagnostic(stage,error){
  const known=['ItemNotFound','InvalidArgument','GeneralException','AccessDenied','ApiNotFound','InvalidOperation'];
- const code=known.includes(error?.code)?error.code:'UNCLASSIFIED';
+ const candidate=error?.code;
+ const code=known.includes(candidate)?candidate:'UNCLASSIFIED';
  // Do not display native message/debugInfo: they can include private content.
  return qaTrustedError('QA_DIAGNOSTIC stage='+stage+' code='+code);
 }
@@ -69,11 +70,38 @@ async function qaResourcePreflight(Excel){
   let missing=false;
   try{await Excel.run(async context=>{
    const items=kind==='sheet'?context.workbook.worksheets:context.workbook.tables;
-   const item=items.getItemOrNullObject(name);item.load('isNullObject');
+   // isNullObject is populated automatically by sync; do not load it.
+   const item=items.getItemOrNullObject(name);
    await context.sync();missing=item.isNullObject;
   })}catch(error){throw qaDiagnostic('PREFLIGHT_'+label,error)}
   if(missing)throw qaTrustedError('QA_DIAGNOSTIC stage=PREFLIGHT_'+label+' code=MISSING_RESOURCE');
  }
+}
+async function qaTableInventory(Excel){
+ let names;
+ try{await Excel.run(async context=>{
+  const tables=context.workbook.tables;tables.load('items/name');await context.sync();
+  if(tables.items.length>128)throw Error('QA_TABLE_INVENTORY_BOUNDS');
+  names=new Set(tables.items.map(t=>t.name));
+ })}catch(error){throw qaDiagnostic('INVENTORY_TABLES',error)}
+ return qaResources.filter(r=>r[0]==='table').map(([,label,name])=>({label,present:names.has(name)}));
+}
+async function qaInspectResources(Excel){
+ const inventory=await qaTableInventory(Excel);
+ // Summaries contain fixed labels and booleans only, never arbitrary names.
+ const summary=inventory.map(r=>r.label+'='+(r.present?'PRESENT':'ABSENT')).join(' ');
+ const baseline=inventory.find(r=>r.label==='BASELINE');
+ if(!baseline.present)return summary+' BASELINE_PROBE=NOT_RUN';
+ try{await Excel.run(async context=>{
+  const table=context.workbook.tables.getItemOrNullObject('tblHcktBaseline');
+  await context.sync();if(table.isNullObject)throw qaTrustedError('QA_DIAGNOSTIC stage=INSPECT_BASELINE_NULL code=MISSING_RESOURCE');
+ })}catch(error){const trusted=qaTrustedDiagnostics.get(error);throw qaTrustedError(summary+' '+(trusted||qaDiagnostic('INSPECT_BASELINE_NULL',error).message))}
+ try{await Excel.run(async context=>{
+  const body=context.workbook.tables.getItem('tblHcktBaseline').getDataBodyRange();
+  body.load('rowCount,columnCount');await context.sync();
+  if(body.columnCount!==12 || body.rowCount>30000)throw qaTrustedError('QA_DIAGNOSTIC stage=INSPECT_BASELINE_BODY code=SCHEMA_OR_BOUNDS');
+ })}catch(error){const trusted=qaTrustedDiagnostics.get(error);throw qaTrustedError(summary+' '+(trusted||qaDiagnostic('INSPECT_BASELINE_BODY',error).message))}
+ return summary+' BASELINE_PROBE=PASSED';
 }
 function qaDiagnosticHost(host,Excel){
  const stages={guardQA:'IDENTITY_GUARD',claimSession:'CLAIM_SESSION',bootstrapBounded:'BOOTSTRAP',addHandler:'ADD_HANDLER',setStartup:'SET_STARTUP',resetStartupVerified:'RESET_STARTUP',removeHandler:'REMOVE_HANDLER',disposeAllHandlers:'DISPOSE_HANDLERS',releaseSession:'RELEASE_SESSION'};
@@ -86,14 +114,15 @@ function qaDiagnosticHost(host,Excel){
     const trusted=qaTrustedDiagnostics.get(error);
     if(trusted)throw qaTrustedError(trusted);
     // Exact known application codes only; create a fresh bounded error.
-    if(qaApplicationCodes.has(error?.message))throw Error(error.message);
+    const applicationCode=error?.message;
+    if(qaApplicationCodes.has(applicationCode))throw Error(applicationCode);
     throw qaDiagnostic(stage,error);
    }
   };
  }
  return host;
 }
-globalThis.HcktQADiagnostics={qaResourcePreflight,qaDiagnosticHost};
+globalThis.HcktQADiagnostics={qaResourcePreflight,qaDiagnosticHost,qaInspectResources};
 
 let controller,host;
 const view={status:(state,error)=>{document.getElementById('status').textContent=state;document.getElementById('details').textContent=error||''},report:plans=>{const warnings=plans.flatMap(p=>[...(p.errors||[]),...(p.warnings||[])]);view.status(warnings.length?'Có dòng cần đối soát; xem chi tiết':'Tự động đang hoạt động trên bản QA',warnings.join('\n'))}};
@@ -132,5 +161,25 @@ Office.onReady(async info=>{
   }catch(error){view.status('QA activation not ready; review required',error.message)}
   finally{activating=false;activationPending=null;activate.disabled=stopping || controller?.ready===true}
  };
+ // Targeted, explicitly read-only inspection; does not activate or save settings.
+ if(typeof document.createElement==='function'){
+  const inspect=document.createElement('button');inspect.id='inspectQAResources';inspect.textContent='Inspect QA resources (read only)';
+  activate.parentNode.insertBefore(inspect,activate.nextSibling);
+  let inspecting=false;
+  inspect.onclick=async()=>{
+   if(inspecting || activating || stopping || controller?.ready)return;
+   inspecting=true;inspect.disabled=true;const version=activationVersion;
+   try{
+    const binding=JSON.parse(document.getElementById('qaBinding').value);
+    const liveURL=await new Promise((resolve,reject)=>Office.context.document.getFilePropertiesAsync(r=>r.status===Office.AsyncResultStatus.Succeeded?resolve(r.value.url):reject(Error('FILE_URL_UNAVAILABLE'))));
+    HcktQAActivation.bindCurrentQA(liveURL,binding);
+    const result=await qaInspectResources(Excel);
+    if(version===activationVersion && !stopping)view.status('Read-only QA resource inspection',result);
+   }catch(error){
+    if(version===activationVersion && !stopping)view.status('Read-only QA resource inspection stopped',qaTrustedDiagnostics.get(error)||qaDiagnostic('INSPECTION_GUARD',error).message);
+   }finally{inspecting=false;inspect.disabled=false}
+  };
+ }
+
 });
 
