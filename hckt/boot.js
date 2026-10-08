@@ -39,6 +39,62 @@ globalThis.HcktQAActivation={bindCurrentQA,activateQA};
 let activationVersion=0,activationPending=null,stopping=false;
 /* global Office, Excel, HcktQA */
 'use strict';
+
+// Local, allowlisted diagnostic labels only. No URL, row data or telemetry.
+const qaResources=[
+ ['sheet','PURCHASE','ĐỀ NGHỊ MUA'],['sheet','PRODUCTION','ĐỀ NGHỊ SX'],
+ ['sheet','EXPORT','ĐỀ NGHỊ XUẤT'],['sheet','STATE','_HCKT_STATE'],
+ ['sheet','LOOKUP','_HCKT_LOOKUP'],['sheet','SOURCE','_A00_SOURCE_QA'],
+ ['table','BASELINE','tblHcktBaseline'],['table','REGISTER','tblHcktRegister'],
+ ['table','CATALOG','tblA00IntegrationAudit'],
+ ['table','PURCHASE_ROWS','tblCurrentPurchase'],['table','PRODUCTION_ROWS','tblCurrentProduction'],
+ ['table','EXPORT_ROWS','tblCurrentExport']];
+const qaTrustedDiagnostics=new WeakMap();
+const qaApplicationCodes=new Set([
+ 'QA_CONFIGURATION_DISABLED','OFFICE_RUNTIME_UNSUPPORTED','FILE_URL_UNAVAILABLE','QA_DOCUMENT_ONLY',
+ 'LOCAL_SESSION_ALREADY_ACTIVE','HANDLER_CLEANUP_REQUIRED','LOCAL_SESSION_STOPPED','LATEST_STATE_CHANGED',
+ 'STATE_BOUNDS','SHEET_SCHEMA_OR_BOUNDS','EXISTING_UID_MISSING_OR_DUPLICATE',
+ 'QA_BASELINE_SEED_NOT_ENABLED','PROJECT_DISPLAY_NOT_UNIQUE','BLD_COUNT_NOT_THREE',
+ 'HANDLER_REMOVAL_NOT_VERIFIED','STARTUP_VERIFICATION_FAILED','STARTUP_REMOVAL_NOT_VERIFIED'
+]);
+function qaTrustedError(message){const error=Error(message);qaTrustedDiagnostics.set(error,message);return error}
+function qaDiagnostic(stage,error){
+ const known=['ItemNotFound','InvalidArgument','GeneralException','AccessDenied','ApiNotFound','InvalidOperation'];
+ const code=known.includes(error?.code)?error.code:'UNCLASSIFIED';
+ // Do not display native message/debugInfo: they can include private content.
+ return qaTrustedError('QA_DIAGNOSTIC stage='+stage+' code='+code);
+}
+async function qaResourcePreflight(Excel){
+ for(const [kind,label,name] of qaResources){
+  let missing=false;
+  try{await Excel.run(async context=>{
+   const items=kind==='sheet'?context.workbook.worksheets:context.workbook.tables;
+   const item=items.getItemOrNullObject(name);item.load('isNullObject');
+   await context.sync();missing=item.isNullObject;
+  })}catch(error){throw qaDiagnostic('PREFLIGHT_'+label,error)}
+  if(missing)throw qaTrustedError('QA_DIAGNOSTIC stage=PREFLIGHT_'+label+' code=MISSING_RESOURCE');
+ }
+}
+function qaDiagnosticHost(host,Excel){
+ const stages={guardQA:'IDENTITY_GUARD',claimSession:'CLAIM_SESSION',bootstrapBounded:'BOOTSTRAP',addHandler:'ADD_HANDLER',setStartup:'SET_STARTUP',resetStartupVerified:'RESET_STARTUP',removeHandler:'REMOVE_HANDLER',disposeAllHandlers:'DISPOSE_HANDLERS',releaseSession:'RELEASE_SESSION'};
+ for(const [method,stage] of Object.entries(stages)){
+  if(typeof host[method]!=='function')continue;
+  const original=host[method].bind(host);
+  host[method]=async(...args)=>{
+   if(method==='bootstrapBounded')await qaResourcePreflight(Excel);
+   try{return await original(...args)}catch(error){
+    const trusted=qaTrustedDiagnostics.get(error);
+    if(trusted)throw qaTrustedError(trusted);
+    // Exact known application codes only; create a fresh bounded error.
+    if(qaApplicationCodes.has(error?.message))throw Error(error.message);
+    throw qaDiagnostic(stage,error);
+   }
+  };
+ }
+ return host;
+}
+globalThis.HcktQADiagnostics={qaResourcePreflight,qaDiagnosticHost};
+
 let controller,host;
 const view={status:(state,error)=>{document.getElementById('status').textContent=state;document.getElementById('details').textContent=error||''},report:plans=>{const warnings=plans.flatMap(p=>[...(p.errors||[]),...(p.warnings||[])]);view.status(warnings.length?'Có dòng cần đối soát; xem chi tiết':'Tự động đang hoạt động trên bản QA',warnings.join('\n'))}};
 Office.onReady(async info=>{
@@ -51,7 +107,7 @@ Office.onReady(async info=>{
   // settings, never in publicly hosted assets. No business cells sent to host.
   const privateCfg=Office.context.document.settings.get('A00.HCKT.QA')||{};
   const cfg={...defaults,...privateCfg};
-  host=HcktQA.createOfficeHost(Excel,Office,cfg,view);controller=HcktQA.controller(host);await controller.start();
+  host=qaDiagnosticHost(HcktQA.createOfficeHost(Excel,Office,cfg,view),Excel);controller=HcktQA.controller(host);await controller.start();
   document.getElementById('disable').disabled=false;
  }catch(error){view.status('Tự động chưa sẵn sàng',error.message);document.getElementById('disable').disabled=!controller}
  document.getElementById('disable').onclick=async()=>{ if(stopping)return;stopping=true;activationVersion++;host?.invalidateSession?.();view.status('Stopping QA; waiting for pending activation and cleanup');if(activationPending)await activationPending.catch(()=>{});
@@ -69,7 +125,7 @@ Office.onReady(async info=>{
    const input=document.getElementById('qaBinding');const binding=JSON.parse(input.value);input.value='';
    activationPending=HcktQAActivation.activateQA({Office,binding,assertActive:()=>{if(version!==activationVersion)throw Error('QA_ACTIVATION_STOPPED')},start:async cfg=>{
     if(controller)await controller.uninstall();
-    host=HcktQA.createOfficeHost(Excel,Office,cfg,view);controller=HcktQA.controller(host);await controller.start();document.getElementById('disable').disabled=false;
+    host=qaDiagnosticHost(HcktQA.createOfficeHost(Excel,Office,cfg,view),Excel);controller=HcktQA.controller(host);await controller.start();document.getElementById('disable').disabled=false;
    },stop:async()=>{if(controller)await controller.uninstall()}});
    await activationPending;
    view.status('QA active for this bound copy; request numbers remain manual.');
@@ -77,3 +133,4 @@ Office.onReady(async info=>{
   finally{activating=false;activationPending=null;activate.disabled=stopping || controller?.ready===true}
  };
 });
+
