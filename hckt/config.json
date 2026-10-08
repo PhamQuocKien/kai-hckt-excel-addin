@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "singleSessionMode": true,
+  "allowInitialStateSeed": false,
+  "baselineTable": "tblHcktBaseline",
+  "registerTable": "tblHcktRegister"
+}

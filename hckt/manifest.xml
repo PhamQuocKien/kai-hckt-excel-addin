@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0" xsi:type="TaskPaneApp">
+ <Id>742211fe-aea0-4c66-9140-f3d63ed7917e</Id><Version>0.4.0.0</Version><ProviderName>KAI — A00 Mapping</ProviderName><DefaultLocale>vi-VN</DefaultLocale>
+ <DisplayName DefaultValue="HCKT Events QA"/><Description DefaultValue="Synchronise project details and approval dates; request numbers and dates remain manually editable."/>
+ <IconUrl DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/icon32.png"/><SupportUrl DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/taskpane.html"/>
+ <AppDomains><AppDomain>https://phamquockien.github.io</AppDomain></AppDomains><Hosts><Host Name="Workbook"/></Hosts>
+ <Requirements><Sets DefaultMinVersion="1.1"><Set Name="ExcelApi" MinVersion="1.14"/><Set Name="SharedRuntime" MinVersion="1.1"/></Sets></Requirements>
+ <DefaultSettings><SourceLocation DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/taskpane.html"/></DefaultSettings><Permissions>ReadWriteDocument</Permissions>
+ <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+  <Requirements><bt:Sets DefaultMinVersion="1.1"><bt:Set Name="SharedRuntime" MinVersion="1.1"/></bt:Sets></Requirements>
+  <Hosts><Host xsi:type="Workbook"><Runtimes><Runtime resid="Taskpane.Url" lifetime="long"/></Runtimes><DesktopFormFactor>
+   <FunctionFile resid="Taskpane.Url"/>
+   <ExtensionPoint xsi:type="PrimaryCommandSurface"><OfficeTab id="TabHome"><Group id="HcktQA.Group"><Label resid="Group.Label"/>
+    <Icon><bt:Image size="16" resid="Icon.16"/><bt:Image size="32" resid="Icon.32"/><bt:Image size="80" resid="Icon.80"/></Icon>
+    <Control xsi:type="Button" id="HcktQA.Open"><Label resid="Button.Label"/><Supertip><Title resid="Button.Label"/><Description resid="Button.Description"/></Supertip>
+     <Icon><bt:Image size="16" resid="Icon.16"/><bt:Image size="32" resid="Icon.32"/><bt:Image size="80" resid="Icon.80"/></Icon>
+     <Action xsi:type="ShowTaskpane"><SourceLocation resid="Taskpane.Url"/></Action>
+    </Control>
+   </Group></OfficeTab></ExtensionPoint>
+  </DesktopFormFactor></Host></Hosts>
+  <Resources>
+   <bt:Images><bt:Image id="Icon.16" DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/icon16.png"/><bt:Image id="Icon.32" DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/icon32.png"/><bt:Image id="Icon.80" DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/icon80.png"/></bt:Images>
+   <bt:Urls><bt:Url id="Taskpane.Url" DefaultValue="https://phamquockien.github.io/kai-hckt-excel-addin/hckt/taskpane.html"/></bt:Urls>
+   <bt:ShortStrings><bt:String id="Group.Label" DefaultValue="HCKT QA"/><bt:String id="Button.Label" DefaultValue="HCKT Events QA"/></bt:ShortStrings>
+   <bt:LongStrings><bt:String id="Button.Description" DefaultValue="Xem tình trạng tiện ích; xử lý dữ liệu tự chạy theo sự kiện trên bản QA được duyệt."/></bt:LongStrings>
+  </Resources>
+ </VersionOverrides>
+</OfficeApp>
