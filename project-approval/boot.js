@@ -1,7 +1,7 @@
 /* No project data leaves Excel. Target identity stored only in this workbook's settings. */
 'use strict';
 const SETTING='KAI.HCKT.ProjectApproval.v1';let active=null, starting=false, actionBusy=false;
-const view=(state,detail='')=>{document.getElementById('status').textContent=state;document.getElementById('details').textContent=detail;};
+const view=(state,detail='')=>{document.getElementById('status').textContent=state;document.getElementById('details').textContent='Build: '+(globalThis.HcktProjectEngine?.build||'UNKNOWN')+'\n'+detail;};
 function identity(url){const u=new URL(url);if(u.protocol!=='https:'||!u.hostname.endsWith('.sharepoint.com'))throw Error('SHAREPOINT_URL_REQUIRED');const g=(u.searchParams.get('sourcedoc')||'').replace(/[{}]/g,'').toLowerCase();if(g){if(!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(g))throw Error('INVALID_SOURCEDOC');return{origin:u.origin,id:'guid:'+g};}if(!/\.xlsx$/i.test(u.pathname))throw Error('CANONICAL_XLSX_URL_REQUIRED');return{origin:u.origin,id:'path:'+decodeURIComponent(u.pathname)};}
 const save=()=>new Promise((ok,no)=>Office.context.document.settings.saveAsync(r=>r.status===Office.AsyncResultStatus.Succeeded?ok():no(Error(r.error.message))));
 async function start(){

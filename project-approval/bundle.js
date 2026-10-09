@@ -73,6 +73,17 @@ function approvalPlan(row, changed, previousStatus, now=new Date()) {
  return {};
 }
 Object.assign(module.exports,{approvalColumns,vietnamSerial,approvalPlan});
+// Recover catalog-derived ownership without writing any workbook cell.
+// Exact full identity + one unique address; custom/ambiguous values remain manual.
+function seedOwnership(row,index) {
+ const p=index.byKey.get(text(row.key));
+ if(!p || text(row.display)!==p.display || p.addresses.size!==1)return null;
+ const expected=[...p.addresses][0];
+ if(!expected || text(row.address)!==expected)return null;
+ return {key:p.key,display:p.display,address:text(row.address)};
+}
+module.exports.seedOwnership=seedOwnership;
+module.exports.build='HCKT-20261009-R2';
 
 globalThis.HcktProjectEngine=module.exports;})();
 (function(){const module={exports:{}};
@@ -94,6 +105,16 @@ async function startProjectOnly(Excel, engine, options) {
     const hs=head.values[0], names=['Source','ProjectKey','ProjectDisplay','Address'];
     const ix=names.map(n=>{const a=hs.reduce((a,v,i)=>v===n?a.concat(i):a,[]); if(a.length!==1)throw Error('SOURCE_HEADER:'+n);return a[0];});
     return engine.catalog(body.values.map(r=>({source:r[ix[0]],key:r[ix[1]],display:r[ix[2]],address:r[ix[3]]})));
+  };
+  const seedRows=(name,headers,used,source)=>{
+    const col={...engine.resolve(headers),...engine.approvalColumns(headers,name)};
+    initialEnds.set(name,used.rowIndex+used.values.length);
+    for(let i=0;i<used.values.length;i++){
+      const r=used.rowIndex+i;if(r<2)continue;
+      const id=name+':'+r, row=Object.fromEntries(fields.map(f=>[f,used.values[i][col[f]-used.columnIndex]??'']));
+      statuses.set(id,row.status);
+      const owned=engine.seedOwnership(row,source);if(owned)owners.set(id,owned);else owners.delete(id);
+    }
   };
   const process=async (event, expectedRevision)=>{
     if(stopped || paused || event.triggerSource==='ThisLocalAddin') return;
@@ -149,10 +170,10 @@ async function startProjectOnly(Excel, engine, options) {
     });
   };
   try { await Excel.run(async ctx=>{
-    await readCatalog(ctx); // Validate, no mutations.
+    const startupSource=await readCatalog(ctx); // Validate and seed memory only; no cell writes.
     for(const name of engine.SHEETS){
-      const sheet=ctx.workbook.worksheets.getItem(name), header=sheet.getRange('A2:AZ2');header.load('values');const used=sheet.getUsedRange(true);used.load(['values','rowIndex','columnIndex']);await ctx.sync();engine.resolve(header.values[0]);const ac=engine.approvalColumns(header.values[0],name);initialEnds.set(name,used.rowIndex+used.values.length);for(let i=0;i<used.values.length;i++){const r=used.rowIndex+i;if(r>=2)statuses.set(name+':'+r,used.values[i][ac.status-used.columnIndex]??'');}
-      const invalidate=()=>{++revision;paused=true;report({state:'PAUSED_RESEED',message:'Đang cập nhật sau khi sắp xếp; chờ thông báo sẵn sàng trước khi sửa.'});owners.clear();statuses.clear();processed.clear();journal.length=0;chain=chain.then(async()=>{await Excel.run(async fresh=>{for(const sn of engine.SHEETS){const sh=fresh.workbook.worksheets.getItem(sn),h=sh.getRange('A2:AZ2'),u=sh.getUsedRange(true);h.load('values');u.load(['values','rowIndex','columnIndex']);await fresh.sync();const ac=engine.approvalColumns(h.values[0],sn);initialEnds.set(sn,u.rowIndex+u.values.length);for(let i=0;i<u.values.length;i++)if(u.rowIndex+i>=2)statuses.set(sn+':'+(u.rowIndex+i),u.values[i][ac.status-u.columnIndex]??'');}});paused=false;if(!stopped)report({state:'READY_AFTER_STRUCTURE'});}).catch(e=>{stopped=true;report({stopped:true,error:String(e)});});};
+      const sheet=ctx.workbook.worksheets.getItem(name), header=sheet.getRange('A2:AZ2');header.load('values');const used=sheet.getUsedRange(true);used.load(['values','rowIndex','columnIndex']);await ctx.sync();seedRows(name,header.values[0],used,startupSource);
+      const invalidate=()=>{++revision;paused=true;report({state:'PAUSED_RESEED',message:'Đang cập nhật sau khi sắp xếp; chờ thông báo sẵn sàng trước khi sửa.'});owners.clear();statuses.clear();processed.clear();journal.length=0;chain=chain.then(async()=>{await Excel.run(async fresh=>{const refreshedSource=await readCatalog(fresh);for(const sn of engine.SHEETS){const sh=fresh.workbook.worksheets.getItem(sn),h=sh.getRange('A2:AZ2'),u=sh.getUsedRange(true);h.load('values');u.load(['values','rowIndex','columnIndex']);await fresh.sync();seedRows(sn,h.values[0],u,refreshedSource);}});paused=false;if(!stopped)report({state:'READY_AFTER_STRUCTURE'});}).catch(e=>{stopped=true;report({stopped:true,error:String(e)});});};
       const token=sheet.onChanged.add(event=>{if(event.triggerSource==='ThisLocalAddin')return;if(event.source==='Remote'){stopped=true;++revision;report({stopped:true,error:'REMOTE_EDIT_SINGLE_WRITER_STOP'});return;}if(event.changeType!=='RangeEdited'){invalidate();return;}if(paused){stopped=true;++revision;report({stopped:true,error:'EDIT_DURING_STRUCTURE_RESEED_RESTART_AND_RESELECT_STATUS'});return;}event.sequence=++revision;try{event.bounds=bounds(event.address);}catch(e){stopped=true;report({stopped:true,error:String(e)});return;}journal.push(event);pendingEvents++;chain=chain.then(async()=>{for(let n=0;n<3;n++){if(await process(event,revision)!==false)return;}report({warning:'BUSY_ROW_RESELECT_TO_UPDATE',address:event.address});}).catch(e=>{stopped=true;report({error:String(e),stopped:true});}).finally(()=>{if(--pendingEvents===0){journal.length=0;processed.clear();}});});subscriptions.push(token);
       const sorted=sheet.onRowSorted.add(invalidate);subscriptions.push(sorted);
     }
