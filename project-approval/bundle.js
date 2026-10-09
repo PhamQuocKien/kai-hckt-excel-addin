@@ -187,9 +187,10 @@ globalThis.HcktProjectHost=module.exports;})();
 (function(){const module={exports:{}};
 'use strict';
 // Purchase-only planner. F is evidence, never an output. Persist every reservation before W.
-const BUILD='HCKT-20261009-R3.1-DIAGNOSTIC';
+const BUILD='HCKT-20261009-R3.2-BASELINE';
 const HEADER='SỐ ĐỀ NGHỊ TỰ ĐỘNG';
 const JOURNAL_HEADERS=['HCKT_PURCHASE_NUMBER_V1','ProjectKey','Sequence','RequestNumber','Kind','UTC','OperationId','Version'];
+const BASELINE_HEADERS=['SourceRowUID','ProjectKey','ProjectDisplay','Status','ApprovalDate','Approver','RequestUID','RequestNumber','Address','LastSeenRow','Origin','RequestType'];
 const GATE={required:['key','display','content','requester','submissionDate'],approvalRequired:false};
 const str=x=>String(x??'').trim();
 const formatNumber=(key,seq)=>key+'-'+String(seq).padStart(2,'0');
@@ -204,6 +205,17 @@ function parseSource(value,key){
  const m=value.trim().match(/^(?:(?:ĐNMVT|DNMVT|DNMK|DNMN)\/(?:(?:XSX)[ -])?)?(?:CT)?(\d{3})-(\d{1,6})$/i);
  if(!m||'CT'+m[1]!==key||+m[2]<1)return null;
  return {key,seq:+m[2],number:formatNumber(key,+m[2])};
+}
+function readBaseline(values){
+ if(!values.length||JSON.stringify(values[0])!==JSON.stringify(BASELINE_HEADERS))throw Error('BASELINE_SCHEMA_MISMATCH');
+ const historical=new Set(),seen=new Set();
+ for(const row of values.slice(1)){
+  if(!row.some(v=>str(v)))continue;
+  const uid=str(row[0]),origin=str(row[10]);
+  if(!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(uid)||origin!=='HISTORICAL')throw Error('BASELINE_PROVENANCE_INVALID');
+  if(seen.has(uid))throw Error('BASELINE_DUPLICATE_UID');seen.add(uid);historical.add(uid);
+ }
+ if(!historical.size)throw Error('BASELINE_MISSING_STOP');return historical;
 }
 function validDate(v){
  if(typeof v==='number')return Number.isInteger(v)&&v>=36526&&v<=109574;
@@ -247,7 +259,7 @@ function plan({rows,selected=[],journal=[],baseline=new Set(),catalog,now=new Da
  }
  return {entries,writes,identityWrites,warnings,highWater:Object.fromEntries(max)};
 }
-module.exports={BUILD,HEADER,JOURNAL_HEADERS,GATE,formatNumber,parseNumber,parseSource,validDate,complete,readJournal,serialize,plan};
+module.exports={BUILD,HEADER,JOURNAL_HEADERS,GATE,BASELINE_HEADERS,readBaseline,formatNumber,parseNumber,parseSource,validDate,complete,readJournal,serialize,plan};
 
 globalThis.HcktPurchaseEngine=module.exports;})();
 (function(){const module={exports:{}};
@@ -264,10 +276,8 @@ async function startPurchaseNumbering(Excel,E,projectEngine,options){
   const body=await rangeValues(ctx,table.getDataBodyRange());readStage='PURCHASE_TABLE_HEADER';const head=await rangeValues(ctx,table.getHeaderRowRange());
   if(head.rowIndex!==1||head.columnIndex!==0||![22,23].includes(head.columnCount)||head.values[0][1]!=='PROJECT KEY'||head.values[0][2]!=='MÃ CT/DA'||head.values[0][17]!=='SourceRowUID'||(head.columnCount===23&&head.values[0][22]!==E.HEADER))throw Error('PURCHASE_SCHEMA_MISMATCH');
   const rows=body.values.map((v,i)=>({row:body.rowIndex+i,key:v[1],display:v[2],source:v[5],content:v[6],requester:v[9],submissionDate:v[11],uid:v[17],auto:v[22]??''}));
-  readStage='STATE_USED_RANGE';const state=ctx.workbook.worksheets.getItem('_HCKT_STATE');const extent=state.getUsedRange(true);extent.load(['rowIndex','rowCount']);await ctx.sync();const end=extent.rowIndex+extent.rowCount+1;if(end>100000)throw Error('STATE_EXTENT_TOO_LARGE');const journalAddress='AD3:AK'+Math.max(4,end);readStage='BASELINE_TABLE';const base=await rangeValues(ctx,state.tables.getItem('tblHcktBaseline').getRange());
-  if(base.values[0][0]!=='SourceRowUID'||base.values[0][10]!=='Origin')throw Error('BASELINE_SCHEMA_MISMATCH');
-  const baseline=new Set(base.values.slice(1).filter(r=>r[10]==='HISTORICAL').map(r=>String(r[0])));
-  if(!baseline.size)throw Error('BASELINE_MISSING_STOP');
+  readStage='STATE_USED_RANGE';const state=ctx.workbook.worksheets.getItem('_HCKT_STATE');const extent=state.getUsedRange(true);extent.load(['rowIndex','rowCount']);await ctx.sync();const end=extent.rowIndex+extent.rowCount+1;if(end>100000)throw Error('STATE_EXTENT_TOO_LARGE');const journalAddress='AD3:AK'+Math.max(4,end);readStage='BASELINE_RANGE';const base=await rangeValues(ctx,state.getRange('A3:L'+Math.max(4,end)));
+  const baseline=E.readBaseline(base.values);
   readStage='JOURNAL_RANGE';const jr=await rangeValues(ctx,state.getRange(journalAddress)),header=jr.values[0],journalEmpty=header.every(v=>v==='');
   if(!journalEmpty&&JSON.stringify(header)!==JSON.stringify(E.JOURNAL_HEADERS))throw Error('JOURNAL_SCHEMA_MISMATCH');
   if(journalEmpty&&jr.values.slice(1).some(r=>r.some(v=>v!=='')))throw Error('JOURNAL_OCCUPIED_STOP');
