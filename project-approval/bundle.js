@@ -187,22 +187,23 @@ globalThis.HcktProjectHost=module.exports;})();
 (function(){const module={exports:{}};
 'use strict';
 // Purchase-only planner. F is evidence, never an output. Persist every reservation before W.
-const BUILD='HCKT-20261009-R3-CANDIDATE';
+const BUILD='HCKT-20261009-R3.1-CANDIDATE';
 const HEADER='SỐ ĐỀ NGHỊ TỰ ĐỘNG';
 const JOURNAL_HEADERS=['HCKT_PURCHASE_NUMBER_V1','ProjectKey','Sequence','RequestNumber','Kind','UTC','OperationId','Version'];
 const GATE={required:['key','display','content','requester','submissionDate'],approvalRequired:false};
 const str=x=>String(x??'').trim();
+const formatNumber=(key,seq)=>key+'-'+String(seq).padStart(2,'0');
 function parseNumber(value,key){
  if(typeof value!=='string')return null;
- const m=value.trim().match(/^(CT\d{3})-([1-9]\d{0,5})$/);
+ const m=value.trim().match(/^(CT\d{3})-(\d{1,6})$/);
  if(!m||m[1].toUpperCase()!==key||+m[2]<1)return null;
- return {key,seq:+m[2],number:key+'-'+(+m[2])};
+ return {key,seq:+m[2],number:formatNumber(key,+m[2])};
 }
 function parseSource(value,key){
  if(typeof value!=='string')return null;
  const m=value.trim().match(/^(?:(?:ĐNMVT|DNMVT|DNMK|DNMN)\/(?:(?:XSX)[ -])?)?(?:CT)?(\d{3})-(\d{1,6})$/i);
  if(!m||'CT'+m[1]!==key||+m[2]<1)return null;
- return {key,seq:+m[2],number:key+'-'+(+m[2])};
+ return {key,seq:+m[2],number:formatNumber(key,+m[2])};
 }
 function validDate(v){
  if(typeof v==='number')return Number.isInteger(v)&&v>=36526&&v<=109574;
@@ -212,13 +213,13 @@ function validDate(v){
 function complete(row,catalog){const p=catalog.byKey.get(str(row.key));return !!p&&p.display===str(row.display)&&!!str(row.content)&&!!str(row.requester)&&validDate(row.submissionDate);}
 function readJournal(values){
  const out=[];for(const r of values){if(!r.some(v=>str(v)))continue;const [uid,key,seq,number,kind,utc,op,version]=r;
- if(!['SEED','AUTO','MANUAL'].includes(kind)||!/^CT\d{3,}$/.test(key)||!Number.isInteger(seq)||seq<1||seq>999999||number!==key+'-'+seq||!str(uid)||!str(op)||version!==1)throw Error('JOURNAL_CORRUPT_STOP');
- out.push({uid,key,seq,number,kind,utc,op,version});}return out;
+ if(!['SEED','AUTO','MANUAL'].includes(kind)||!/^CT\d{3,}$/.test(key)||!Number.isInteger(seq)||seq<1||seq>999999||parseNumber(number,key)?.seq!==seq||!str(uid)||!str(op)||version!==1)throw Error('JOURNAL_CORRUPT_STOP');
+ out.push({uid,key,seq,number:formatNumber(key,seq),kind,utc,op,version});}return out;
 }
 function serialize(e){return [e.uid,e.key,e.seq,e.number,e.kind,e.utc,e.op,1];}
 function plan({rows,selected=[],journal=[],baseline=new Set(),catalog,now=new Date().toISOString(),operation='preview',uidFactory=()=>{throw Error('UID_FACTORY_REQUIRED');}}){
  const entries=[],writes=[],identityWrites=[],warnings=[],max=new Map(),used=new Map(),uids=new Map(),latest=new Map();
- const reserve=e=>{max.set(e.key,Math.max(max.get(e.key)||0,e.seq));const k=e.number;if(!used.has(k))used.set(k,new Set());used.get(k).add(e.uid);if(e.kind!=='SEED')latest.set(e.uid,e);};
+ const reserve=e=>{max.set(e.key,Math.max(max.get(e.key)||0,e.seq));const k=formatNumber(e.key,e.seq);if(!used.has(k))used.set(k,new Set());used.get(k).add(e.uid);if(e.kind!=='SEED')latest.set(e.uid,e);};
  journal.forEach(reserve);
  for(const r of rows){if(str(r.uid)){if(uids.has(str(r.uid)))throw Error('DUPLICATE_UID_STOP:'+r.uid);uids.set(str(r.uid),r);}}
  // Strict legacy evidence: duplicate historical references reserve once, never block a CT.
@@ -226,11 +227,12 @@ function plan({rows,selected=[],journal=[],baseline=new Set(),catalog,now=new Da
  // All extant W values are observed before allocating any selected row (multi-paste safe).
  const manualNumbers=new Map();
  for(const r of rows){if(!str(r.auto))continue;const p=parseNumber(r.auto,str(r.key));if(!p){warnings.push({row:r.row,code:'MANUAL_INVALID_PRESERVED'});continue;}
+ if(str(r.auto)!==p.number)warnings.push({row:r.row,code:'MANUAL_NONCANONICAL_PRESERVED',canonical:p.number});
  if(!manualNumbers.has(p.number))manualNumbers.set(p.number,[]);manualNumbers.get(p.number).push(r);
  let uid=str(r.uid);if(!uid){if(str(r.source)||!complete(r,catalog)){warnings.push({row:r.row,code:'MANUAL_MISSING_UID_STOP'});continue;}uid=uidFactory();identityWrites.push({row:r.row,uid,previous:r});}
  if(used.has(p.number)&&[...used.get(p.number)].some(owner=>owner!==uid)){warnings.push({row:r.row,code:'MANUAL_RESERVED_NUMBER_CONFLICT',number:p.number});}
  const prev=latest.get(uid);if(prev&&prev.key!==r.key){warnings.push({row:r.row,code:'PROJECT_CHANGED_NUMBER_PRESERVED'});continue;}
- if(!journal.concat(entries).some(e=>e.uid===uid&&e.number===p.number&&e.kind!=='SEED')){const e={...p,uid,kind:'MANUAL',utc:now,op:operation};entries.push(e);reserve(e);}}
+ if(!journal.concat(entries).some(e=>e.uid===uid&&e.key===p.key&&e.seq===p.seq&&e.kind!=='SEED')){const e={...p,uid,kind:'MANUAL',utc:now,op:operation};entries.push(e);reserve(e);}}
  for(const [number,list] of manualNumbers)if(list.length>1)warnings.push({rows:list.map(r=>r.row),code:'DUPLICATE_MANUAL_PRESERVED',number});
  for(const r of rows){const prev=latest.get(str(r.uid));if(prev&&prev.key!==str(r.key))warnings.push({row:r.row,code:'PROJECT_CHANGED_NUMBER_PRESERVED'});}
  for(const index of selected){const r=rows.find(r=>r.row===index);if(!r)throw Error('SELECTION_OUTSIDE_TABLE');
@@ -241,11 +243,11 @@ function plan({rows,selected=[],journal=[],baseline=new Set(),catalog,now=new Da
  if(latest.has(uid)){warnings.push({row:r.row,code:'RESERVED_OR_CLEARED_NO_REISSUE'});continue;}
  if(warnings.some(w=>['MANUAL_MISSING_UID_STOP','DUPLICATE_MANUAL_PRESERVED','MANUAL_RESERVED_NUMBER_CONFLICT'].includes(w.code))){warnings.push({row:r.row,code:'MANUAL_CONFLICT_REVIEW_REQUIRED'});continue;}
  const key=str(r.key),seq=(max.get(key)||0)+1;if(seq>999999)throw Error('SEQUENCE_OVERFLOW');
- const e={uid,key,seq,number:key+'-'+seq,kind:'AUTO',utc:now,op:operation};entries.push(e);reserve(e);writes.push({row:r.row,uid,number:e.number,previous:r});
+ const e={uid,key,seq,number:formatNumber(key,seq),kind:'AUTO',utc:now,op:operation};entries.push(e);reserve(e);writes.push({row:r.row,uid,number:e.number,previous:r});
  }
  return {entries,writes,identityWrites,warnings,highWater:Object.fromEntries(max)};
 }
-module.exports={BUILD,HEADER,JOURNAL_HEADERS,GATE,parseNumber,parseSource,validDate,complete,readJournal,serialize,plan};
+module.exports={BUILD,HEADER,JOURNAL_HEADERS,GATE,formatNumber,parseNumber,parseSource,validDate,complete,readJournal,serialize,plan};
 
 globalThis.HcktPurchaseEngine=module.exports;})();
 (function(){const module={exports:{}};
