@@ -187,7 +187,7 @@ globalThis.HcktProjectHost=module.exports;})();
 (function(){const module={exports:{}};
 'use strict';
 // Purchase-only planner. F is evidence, never an output. Persist every reservation before W.
-const BUILD='HCKT-20261009-R3.1-CANDIDATE';
+const BUILD='HCKT-20261009-R3.1-DIAGNOSTIC';
 const HEADER='SỐ ĐỀ NGHỊ TỰ ĐỘNG';
 const JOURNAL_HEADERS=['HCKT_PURCHASE_NUMBER_V1','ProjectKey','Sequence','RequestNumber','Kind','UTC','OperationId','Version'];
 const GATE={required:['key','display','content','requester','submissionDate'],approvalRequired:false};
@@ -255,37 +255,37 @@ globalThis.HcktPurchaseEngine=module.exports;})();
 // Single-writer, optimistic preflight. Office.js does NOT provide atomic compare-and-swap.
 async function startPurchaseNumbering(Excel,E,projectEngine,options){
  if(options?.enabled!==true||typeof options.verifyIdentity!=='function')throw Error('EXPLICIT_BINDING_REQUIRED');
- await options.verifyIdentity();let stopped=false,revision=0,chain=Promise.resolve();let manualPending=false;const subscriptions=[],report=options.report||(()=>{});
+ await options.verifyIdentity();let stopped=false,revision=0,chain=Promise.resolve();let manualPending=false,readStage='START';const subscriptions=[],report=options.report||(()=>{});
  const uuid=()=>{if(!globalThis.crypto?.randomUUID)throw Error('SECURE_UUID_UNAVAILABLE');return globalThis.crypto.randomUUID();};
  const noInputFormulas=range=>{if(range.formulas.some(r=>[1,2,5,6,9,11,17,22].some(c=>String(r[c]||'').startsWith('='))))throw Error('NUMBER_INPUT_FORMULA_STOP');};
  const rangeValues=async(ctx,range)=>{range.load(['values','formulas','rowIndex','columnIndex','rowCount','columnCount']);await ctx.sync();return range;};
  const read=async(ctx,selection)=>{
-  await options.verifyIdentity();const sh=ctx.workbook.worksheets.getItem('ĐỀ NGHỊ MUA'),table=sh.tables.getItem('tblCurrentPurchase');
-  const body=await rangeValues(ctx,table.getDataBodyRange()),head=await rangeValues(ctx,table.getHeaderRowRange());
+  readStage='VERIFY_IDENTITY';await options.verifyIdentity();readStage='PURCHASE_TABLE_BODY';const sh=ctx.workbook.worksheets.getItem('ĐỀ NGHỊ MUA'),table=sh.tables.getItem('tblCurrentPurchase');
+  const body=await rangeValues(ctx,table.getDataBodyRange());readStage='PURCHASE_TABLE_HEADER';const head=await rangeValues(ctx,table.getHeaderRowRange());
   if(head.rowIndex!==1||head.columnIndex!==0||![22,23].includes(head.columnCount)||head.values[0][1]!=='PROJECT KEY'||head.values[0][2]!=='MÃ CT/DA'||head.values[0][17]!=='SourceRowUID'||(head.columnCount===23&&head.values[0][22]!==E.HEADER))throw Error('PURCHASE_SCHEMA_MISMATCH');
   const rows=body.values.map((v,i)=>({row:body.rowIndex+i,key:v[1],display:v[2],source:v[5],content:v[6],requester:v[9],submissionDate:v[11],uid:v[17],auto:v[22]??''}));
-  const state=ctx.workbook.worksheets.getItem('_HCKT_STATE');const extent=state.getUsedRange(true);extent.load(['rowIndex','rowCount']);await ctx.sync();const end=extent.rowIndex+extent.rowCount+1;if(end>100000)throw Error('STATE_EXTENT_TOO_LARGE');const journalAddress='AD3:AK'+Math.max(4,end);const base=await rangeValues(ctx,state.tables.getItem('tblHcktBaseline').getRange());
+  readStage='STATE_USED_RANGE';const state=ctx.workbook.worksheets.getItem('_HCKT_STATE');const extent=state.getUsedRange(true);extent.load(['rowIndex','rowCount']);await ctx.sync();const end=extent.rowIndex+extent.rowCount+1;if(end>100000)throw Error('STATE_EXTENT_TOO_LARGE');const journalAddress='AD3:AK'+Math.max(4,end);readStage='BASELINE_TABLE';const base=await rangeValues(ctx,state.tables.getItem('tblHcktBaseline').getRange());
   if(base.values[0][0]!=='SourceRowUID'||base.values[0][10]!=='Origin')throw Error('BASELINE_SCHEMA_MISMATCH');
   const baseline=new Set(base.values.slice(1).filter(r=>r[10]==='HISTORICAL').map(r=>String(r[0])));
   if(!baseline.size)throw Error('BASELINE_MISSING_STOP');
-  const jr=await rangeValues(ctx,state.getRange(journalAddress)),header=jr.values[0],journalEmpty=header.every(v=>v==='');
+  readStage='JOURNAL_RANGE';const jr=await rangeValues(ctx,state.getRange(journalAddress)),header=jr.values[0],journalEmpty=header.every(v=>v==='');
   if(!journalEmpty&&JSON.stringify(header)!==JSON.stringify(E.JOURNAL_HEADERS))throw Error('JOURNAL_SCHEMA_MISMATCH');
   if(journalEmpty&&jr.values.slice(1).some(r=>r.some(v=>v!=='')))throw Error('JOURNAL_OCCUPIED_STOP');
   const data=jr.values.slice(1);let last=-1;data.forEach((r,i)=>{if(r.some(v=>v!==''))last=i;});
   const journal=E.readJournal(data.slice(0,last+1));
-  const catTable=ctx.workbook.worksheets.getItem('_A00_SOURCE_QA').tables.getItem('tblA00IntegrationAudit'),ch=await rangeValues(ctx,catTable.getHeaderRowRange()),cb=await rangeValues(ctx,catTable.getDataBodyRange());
+  readStage='CATALOG_HEADER';const catTable=ctx.workbook.worksheets.getItem('_A00_SOURCE_QA').tables.getItem('tblA00IntegrationAudit'),ch=await rangeValues(ctx,catTable.getHeaderRowRange());readStage='CATALOG_BODY';const cb=await rangeValues(ctx,catTable.getDataBodyRange());
   const ci=['Source','ProjectKey','ProjectDisplay','Address'].map(h=>{const hits=ch.values[0].map((v,i)=>v===h?i:-1).filter(i=>i>=0);if(hits.length!==1)throw Error('CATALOG_HEADER');return hits[0];});
   const catalog=projectEngine.catalog(cb.values.map(r=>({source:r[ci[0]],key:r[ci[1]],display:r[ci[2]],address:r[ci[3]]})));
   let selected=[];
-  if(selection){const sel=ctx.workbook.getSelectedRange();sel.load(['rowIndex','rowCount']);const active=ctx.workbook.worksheets.getActiveWorksheet();active.load('name');await ctx.sync();if(active.name!=='ĐỀ NGHỊ MUA')throw Error('SELECT_PURCHASE_ROWS_ONLY');if(sel.rowCount>500)throw Error('MAX_500_SELECTED_ROWS');selected=Array.from({length:sel.rowCount},(_,i)=>sel.rowIndex+i);if(selected.some(r=>r<body.rowIndex||r>=body.rowIndex+body.rowCount))throw Error('SELECT_TABLE_DATA_ROWS_ONLY');}
+  if(selection){readStage='SELECTED_RANGE';const sel=ctx.workbook.getSelectedRange();sel.load(['rowIndex','rowCount']);const active=ctx.workbook.worksheets.getActiveWorksheet();active.load('name');await ctx.sync();if(active.name!=='ĐỀ NGHỊ MUA')throw Error('SELECT_PURCHASE_ROWS_ONLY');if(sel.rowCount>500)throw Error('MAX_500_SELECTED_ROWS');selected=Array.from({length:sel.rowCount},(_,i)=>sel.rowIndex+i);if(selected.some(r=>r<body.rowIndex||r>=body.rowIndex+body.rowCount))throw Error('SELECT_TABLE_DATA_ROWS_ONLY');}
   if(rows.some((r,i)=>[1,2,5,6,9,11,17,22].some(c=>String(body.formulas[i]?.[c]||'').startsWith('='))))throw Error('NUMBER_INPUT_FORMULA_STOP');
-  return {sh,table,body,head,state,rows,baseline,journal,journalEmpty,journalNext:4+last,catalog,selected,journalAddress,journalSnapshot:JSON.stringify(jr.values),snapshot:JSON.stringify(body.values)};
+  readStage='READ_COMPLETE';return {sh,table,body,head,state,rows,baseline,journal,journalEmpty,journalNext:4+last,catalog,selected,journalAddress,journalSnapshot:JSON.stringify(jr.values),snapshot:JSON.stringify(body.values)};
  };
  const execute=async(mode)=>Excel.run(async ctx=>{
   if(stopped)throw Error('NUMBERING_STOPPED_RESTART_REQUIRED');const rev=revision,s=await read(ctx,mode!=='observe');
   let previewUid=0;const result=E.plan({...s,operation:mode==='preview'?'preview':uuid(),uidFactory:mode==='preview'?()=>'(UID mới '+(++previewUid)+')':uuid});
   if(mode==='preview'){report({numbering:'PREVIEW',gate:E.GATE,...result});return result;}
-  const pending=result.entries,identities=result.writes.filter(w=>!String(w.previous.uid??'').trim()).concat(result.identityWrites);if(!pending.length&&!result.writes.length){report({numbering:'NO_CHANGE',warnings:result.warnings});return result;}
+  readStage='WRITE_PREFLIGHT';const pending=result.entries,identities=result.writes.filter(w=>!String(w.previous.uid??'').trim()).concat(result.identityWrites);if(!pending.length&&!result.writes.length){report({numbering:'NO_CHANGE',warnings:result.warnings});return result;}
   if(s.journalNext+pending.length>99999)throw Error('JOURNAL_CAPACITY_STOP');
   // Compare full input + journal again. Sort/edit races invalidate the operation; never retry automatically.
   const bodyCheck=await rangeValues(ctx,s.table.getDataBodyRange());noInputFormulas(bodyCheck);const journalCheck=await rangeValues(ctx,s.state.getRange(s.journalAddress));
@@ -317,7 +317,7 @@ async function startPurchaseNumbering(Excel,E,projectEngine,options){
    const verified=await rangeValues(ctx,s.table.getDataBodyRange());for(const w of result.writes){const row=verified.values[w.row-verified.rowIndex];if(row?.[17]!==w.uid||row?.[22]!==w.number)throw Error('NUMBER_READBACK_FAILED_STOP');}
   }
   report({numbering:'COMMITTED',count:result.writes.length,warnings:result.warnings});return result;
- });
+ }).catch(e=>{const location=e.debugInfo?.errorLocation||e.errorLocation||'';throw Error('NUMBERING_STAGE='+readStage+'; CODE='+(e.code||'APPLICATION')+'; LOCATION='+location+'; '+String(e.message||e));});
  const queue=mode=>{const next=chain.then(()=>execute(mode));chain=next.catch(e=>{stopped=true;report({stopped:true,numbering:true,error:String(e)});});return next;};
  try{await Excel.run(async ctx=>{for(const name of ['ĐỀ NGHỊ MUA','_HCKT_STATE','_A00_SOURCE_QA']){const sh=ctx.workbook.worksheets.getItem(name);subscriptions.push(sh.onChanged.add(e=>{if(e.triggerSource==='ThisLocalAddin')return;++revision;if(e.source==='Remote'){stopped=true;report({stopped:true,numbering:true,error:'REMOTE_EDIT_SINGLE_WRITER_STOP'});return;}if(name==='ĐỀ NGHỊ MUA'&&e.changeType==='RangeEdited'){const a=String(e.address).split('!').pop().replace(/\$/g,'').match(/^([A-Z]+)\d+(?::([A-Z]+)\d+)?$/i);const column=x=>[...x.toUpperCase()].reduce((n,c)=>n*26+c.charCodeAt(0)-64,0);if(a&&column(a[1])<=23&&column(a[2]||a[1])>=23){if(manualPending){stopped=true;report({stopped:true,error:'RAPID_MANUAL_EDIT_REVIEW_REQUIRED'});return;}manualPending=true;queue('observe').catch(()=>{}).finally(()=>{manualPending=false;});}}}));subscriptions.push(sh.onRowSorted.add(()=>{++revision;}));}await ctx.sync();});}catch(e){stopped=true;for(const s of subscriptions){try{s.remove();await s.context.sync();}catch(_){}}throw e;}
  // Startup never seeds, creates a column, persists a setting, or issues numbers.
